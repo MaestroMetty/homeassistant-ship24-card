@@ -1,11 +1,11 @@
 // Use absolute URLs with ?module parameter as per Home Assistant documentation
+// Using lit directly as shown in the Home Assistant tutorial
 // https://developers.home-assistant.io/docs/frontend/custom-ui/custom-card/
-// Using lit-element 2.x as shown in the official documentation example
 import {
   LitElement,
   html,
   css,
-} from "https://unpkg.com/lit-element@2.0.1/lit-element.js?module";
+} from "https://unpkg.com/lit@2/index.js?module";
 
 // Card Editor Component
 class Ship24CardEditor extends LitElement {
