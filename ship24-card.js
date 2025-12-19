@@ -19,6 +19,8 @@ class Ship24CardEditor extends LitElement {
   setConfig(config) {
     this.config = {
       entities: [],
+      device: null,
+      ignored_entities: [],
       map_height: 400,
       show_list: true,
       default_zoom: 2,
@@ -63,6 +65,33 @@ class Ship24CardEditor extends LitElement {
     this._fireChangedEvent();
   }
 
+  _deviceChanged(ev) {
+    if (!this.config) {
+      return;
+    }
+    const newConfig = { ...this.config };
+    newConfig.device = ev.detail.value || null;
+    this.config = newConfig;
+    this._fireChangedEvent();
+  }
+
+  _ignoredEntitiesChanged(ev) {
+    if (!this.config) {
+      return;
+    }
+    const newConfig = { ...this.config };
+    const value = ev.detail.value;
+    if (Array.isArray(value)) {
+      newConfig.ignored_entities = value;
+    } else if (value) {
+      newConfig.ignored_entities = [value];
+    } else {
+      newConfig.ignored_entities = [];
+    }
+    this.config = newConfig;
+    this._fireChangedEvent();
+  }
+
   _fireChangedEvent() {
     const event = new CustomEvent("config-changed", {
       detail: { config: this.config },
@@ -80,7 +109,21 @@ class Ship24CardEditor extends LitElement {
     return html`
       <div class="card-config">
         <div class="config-section">
-          <div class="config-section-header">Entities</div>
+          <div class="config-section-header">Device Selection</div>
+          <ha-device-picker
+            .hass=${this.hass}
+            .value=${this.config.device || ""}
+            @value-changed=${this._deviceChanged}
+            label="Ship24 Tracking Device"
+            .includeDeviceClasses=${[]}
+          ></ha-device-picker>
+          <div class="config-help">
+            Select the Ship24 Tracking device. If not specified, the card will search for devices with Ship24 sensors.
+          </div>
+        </div>
+
+        <div class="config-section">
+          <div class="config-section-header">Entities (Optional)</div>
           <ha-entity-picker
             .hass=${this.hass}
             .value=${this.config.entities || []}
@@ -91,7 +134,23 @@ class Ship24CardEditor extends LitElement {
             .multiple=${true}
           ></ha-entity-picker>
           <div class="config-help">
-            Select one or more Ship24 sensor entities to display on the card.
+            Select specific Ship24 sensor entities to display, or leave empty to auto-discover all tracked packages from the selected device.
+          </div>
+        </div>
+
+        <div class="config-section">
+          <div class="config-section-header">Ignored Sensors</div>
+          <ha-entity-picker
+            .hass=${this.hass}
+            .value=${this.config.ignored_entities || []}
+            .includeDomains=${["sensor"]}
+            .allowCustomEntity=${true}
+            @value-changed=${this._ignoredEntitiesChanged}
+            label="Sensors to Ignore"
+            .multiple=${true}
+          ></ha-entity-picker>
+          <div class="config-help">
+            Select sensors to exclude from the card (e.g., "last_message" sensor). These will not be shown even if they belong to the selected device.
           </div>
         </div>
 
@@ -240,6 +299,8 @@ class Ship24Card extends LitElement {
   static getStubConfig() {
     return {
       entities: [],
+      device: null,
+      ignored_entities: [],
       map_height: 400,
       show_list: true,
       default_zoom: 2,
@@ -272,6 +333,7 @@ class Ship24Card extends LitElement {
     super();
     this._packages = [];
     this._selectedPackage = null;
+    this._currentPackageIndex = 0;
     this._showAddForm = false;
     this._map = null;
     this._markers = [];
@@ -279,29 +341,40 @@ class Ship24Card extends LitElement {
   }
 
   setConfig(config) {
-    if (!config.entities || !Array.isArray(config.entities)) {
-      throw new Error("Entities must be specified");
-    }
+    // Entities are optional - if not provided, card will auto-discover packages
     this.config = {
+      entities: [],
+      device: null,
+      ignored_entities: [],
       map_height: 400,
       show_list: true,
       default_zoom: 2,
       ...config,
     };
+    // Ensure entities is an array if provided
+    if (this.config.entities && !Array.isArray(this.config.entities)) {
+      this.config.entities = [this.config.entities];
+    }
+    // Ensure ignored_entities is an array if provided
+    if (this.config.ignored_entities && !Array.isArray(this.config.ignored_entities)) {
+      this.config.ignored_entities = [this.config.ignored_entities];
+    }
   }
 
   firstUpdated() {
     this._updatePackages();
-    loadLeaflet().then(() => {
-      this._initMap();
-    });
+    if (this._packages.length > 0 && !this._selectedPackage) {
+      this._selectedPackage = this._packages[0];
+      this._currentPackageIndex = 0;
+    }
   }
 
   updated(changedProperties) {
     if (changedProperties.has("hass") || changedProperties.has("config")) {
       this._updatePackages();
-      if (this._map) {
-        this._updateMap();
+      if (this._packages.length > 0 && !this._selectedPackage) {
+        this._selectedPackage = this._packages[0];
+        this._currentPackageIndex = 0;
       }
     }
   }
@@ -309,15 +382,91 @@ class Ship24Card extends LitElement {
   _updatePackages() {
     if (!this.hass || !this.config) return;
 
-    this._packages = this.config.entities
+    const allStates = this.hass.states;
+    const packageEntities = [];
+    const ignoredEntities = new Set((this.config.ignored_entities || []).map(e => e.toLowerCase()));
+
+    // If entities are explicitly configured, use them
+    if (this.config.entities && this.config.entities.length > 0) {
+      packageEntities.push(...this.config.entities);
+    } else {
+      // Auto-discover sensors based on device selection
+      let deviceEntityIds = new Set();
+
+      // If device is specified, try to get entities for that device
+      if (this.config.device) {
+        // Try to access device registry through hass
+        // In Home Assistant frontend, we can access device info through entity registry
+        try {
+          // Get entity registry if available
+          const entityRegistry = this.hass.entities || {};
+          for (const [entityId, entity] of Object.entries(entityRegistry)) {
+            if (entity && entity.device_id === this.config.device && entityId.startsWith('sensor.')) {
+              deviceEntityIds.add(entityId);
+            }
+          }
+        } catch (e) {
+          // Fallback: if device registry not accessible, we'll search all sensors
+          console.warn('Could not access device registry, searching all sensors');
+        }
+      }
+
+      // Find all sensor entities that have tracking_number attribute
+      for (const [entityId, state] of Object.entries(allStates)) {
+        // Only process sensor entities
+        if (!entityId.startsWith('sensor.')) continue;
+        
+        // Skip ignored entities (case-insensitive)
+        if (ignoredEntities.has(entityId.toLowerCase())) continue;
+        
+        // Skip the logging sensor by default (unless explicitly included)
+        if (!ignoredEntities.has(entityId.toLowerCase()) && 
+            (entityId.includes('last_message') || entityId.includes('_logging'))) {
+          continue;
+        }
+        
+        const attrs = state.attributes || {};
+        
+        // If device is specified and we found device entities, filter by device
+        if (this.config.device && deviceEntityIds.size > 0) {
+          if (!deviceEntityIds.has(entityId)) {
+            continue;
+          }
+        }
+        
+        // Check if this is a Ship24 package sensor (has tracking_number attribute)
+        if (attrs.tracking_number) {
+          packageEntities.push(entityId);
+        }
+      }
+    }
+
+    this._packages = packageEntities
       .map((entityId) => {
+        // Skip ignored entities (case-insensitive)
+        if (ignoredEntities.has(entityId.toLowerCase())) {
+          return null;
+        }
+
         const state = this.hass.states[entityId];
         if (!state) return null;
 
-        const attrs = state.attributes;
+        const attrs = state.attributes || {};
+        
+        // Skip logging sensor if somehow included (unless explicitly allowed)
+        if (!ignoredEntities.has(entityId.toLowerCase()) &&
+            (entityId.includes('last_message') || entityId.includes('_logging'))) {
+          return null;
+        }
+        
+        // Only include if it has tracking_number (it's a package sensor)
+        if (!attrs.tracking_number) {
+          return null;
+        }
+
         return {
           entityId,
-          trackingNumber: attrs.tracking_number || entityId,
+          trackingNumber: attrs.tracking_number || entityId.replace('sensor.', ''),
           customName: attrs.custom_name,
           status: attrs.status,
           statusText: attrs.status_text || state.state,
@@ -426,11 +575,91 @@ class Ship24Card extends LitElement {
   }
 
   _showPackageDetails(pkg) {
-    this._selectedPackage = pkg;
+    const index = this._packages.findIndex(p => p.entityId === pkg.entityId);
+    if (index !== -1) {
+      this._currentPackageIndex = index;
+      this._selectedPackage = pkg;
+    }
   }
 
   _closeDetails() {
     this._selectedPackage = null;
+  }
+
+  _nextPackage() {
+    if (this._packages.length === 0) return;
+    this._currentPackageIndex = (this._currentPackageIndex + 1) % this._packages.length;
+    this._selectedPackage = this._packages[this._currentPackageIndex];
+  }
+
+  _prevPackage() {
+    if (this._packages.length === 0) return;
+    this._currentPackageIndex = (this._currentPackageIndex - 1 + this._packages.length) % this._packages.length;
+    this._selectedPackage = this._packages[this._currentPackageIndex];
+  }
+
+  _renderStyledMap(pkg) {
+    if (!pkg || !pkg.location) {
+      return html`<div class="map-placeholder">No location data</div>`;
+    }
+
+    // Calculate route path (simplified - you can enhance this with actual route data)
+    const startX = 50;
+    const startY = 50;
+    const endX = 350;
+    const endY = 150;
+    
+    // Create a wavy path
+    const path = `M ${startX} ${startY} Q ${(startX + endX) / 2} ${startY - 30} ${endX} ${endY}`;
+    
+    return html`
+      <div class="styled-map">
+        <svg viewBox="0 0 400 200" class="map-svg">
+          <!-- Background -->
+          <rect width="400" height="200" fill="#e8e8e8"/>
+          
+          <!-- Water areas -->
+          <ellipse cx="100" cy="80" rx="60" ry="40" fill="#b3d9ff" opacity="0.6"/>
+          <ellipse cx="300" cy="120" rx="50" ry="35" fill="#b3d9ff" opacity="0.6"/>
+          
+          <!-- Green areas (parks) -->
+          <ellipse cx="200" cy="60" rx="40" ry="30" fill="#c8e6c9" opacity="0.7"/>
+          <ellipse cx="150" cy="150" rx="35" ry="25" fill="#c8e6c9" opacity="0.7"/>
+          
+          <!-- Roads -->
+          <line x1="0" y1="100" x2="400" y2="100" stroke="white" stroke-width="3" opacity="0.8"/>
+          <line x1="200" y1="0" x2="200" y2="200" stroke="white" stroke-width="3" opacity="0.8"/>
+          <line x1="0" y1="50" x2="400" y2="150" stroke="white" stroke-width="2" opacity="0.6"/>
+          
+          <!-- Route path -->
+          <path d="${path}" stroke="#2196F3" stroke-width="4" fill="none" stroke-linecap="round" class="route-path">
+            <animate attributeName="stroke-dasharray" values="0,1000;1000,0" dur="3s" repeatCount="indefinite"/>
+          </path>
+          
+          <!-- Package icon (start) -->
+          <g transform="translate(${startX - 15}, ${startY - 20})">
+            <!-- Package box -->
+            <rect x="0" y="5" width="30" height="20" fill="#8B4513" rx="2"/>
+            <rect x="2" y="7" width="26" height="16" fill="#A0522D"/>
+            <!-- Barcode -->
+            <line x1="5" y1="10" x2="5" y2="20" stroke="black" stroke-width="1"/>
+            <line x1="8" y1="10" x2="8" y2="20" stroke="black" stroke-width="1"/>
+            <line x1="11" y1="10" x2="11" y2="20" stroke="black" stroke-width="1"/>
+            <line x1="14" y1="10" x2="14" y2="20" stroke="black" stroke-width="1"/>
+            <!-- Icons -->
+            <circle cx="20" cy="12" r="3" fill="black" opacity="0.3"/>
+            <path d="M 22 10 L 24 12 L 22 14 Z" fill="black" opacity="0.3"/>
+          </g>
+          
+          <!-- Destination pin (end) -->
+          <g transform="translate(${endX}, ${endY})">
+            <path d="M 0 0 L -8 15 L 8 15 Z" fill="black"/>
+            <circle cx="0" cy="0" r="6" fill="black"/>
+            <circle cx="0" cy="0" r="3" fill="white"/>
+          </g>
+        </svg>
+      </div>
+    `;
   }
 
   _toggleAddForm() {
@@ -461,8 +690,9 @@ class Ship24Card extends LitElement {
     // Refresh after a moment
     setTimeout(() => {
       this._updatePackages();
-      if (this._map) {
-        this._updateMap();
+      if (this._packages.length > 0 && !this._selectedPackage) {
+        this._selectedPackage = this._packages[0];
+        this._currentPackageIndex = 0;
       }
     }, 1000);
   }
@@ -481,8 +711,11 @@ class Ship24Card extends LitElement {
       return html`<ha-card><div class="error">Invalid configuration</div></ha-card>`;
     }
 
+    const currentPkg = this._selectedPackage || (this._packages.length > 0 ? this._packages[this._currentPackageIndex] : null);
+    const packageNumber = this._packages.length > 0 ? this._currentPackageIndex + 1 : 0;
+
     return html`
-      <ha-card>
+      <ha-card class="modern-card">
         <div class="card-header">
           <div class="title">Package Tracking</div>
           <ha-icon-button
@@ -523,151 +756,83 @@ class Ship24Card extends LitElement {
             `
           : ""}
 
-        <div id="map" style="height: ${this.config.map_height}px; width: 100%;"></div>
-
-        ${this.config.show_list
+        ${currentPkg
           ? html`
-              <div class="package-list">
-                <div class="list-header">Packages (${this._packages.length})</div>
-                ${this._packages.length === 0
-                  ? html`<div class="empty-state">No packages tracked</div>`
-                  : this._packages.map(
-                      (pkg) => html`
-                        <div
-                          class="package-item"
-                          @click=${() => this._showPackageDetails(pkg)}
-                        >
-                          <div class="package-status ${pkg.status}">
-                            <div class="status-dot"></div>
-                          </div>
-                          <div class="package-info">
-                            <div class="package-name">
-                              ${pkg.customName || pkg.trackingNumber}
+              <!-- Styled Map Section -->
+              <div class="map-container">
+                ${this._renderStyledMap(currentPkg)}
+              </div>
+
+              <!-- Package Details Section -->
+              <div class="package-details-section">
+                <div class="package-header">
+                  <button class="nav-button" @click=${this._prevPackage} ?disabled=${this._packages.length <= 1}>
+                    <ha-icon icon="mdi:chevron-left"></ha-icon>
+                  </button>
+                  <div class="package-title">PARCEL#${packageNumber}</div>
+                  <button class="nav-button" @click=${this._nextPackage} ?disabled=${this._packages.length <= 1}>
+                    <ha-icon icon="mdi:chevron-right"></ha-icon>
+                  </button>
+                </div>
+                
+                <div class="updates-list">
+                  ${currentPkg.events && currentPkg.events.length > 0
+                    ? currentPkg.events
+                        .slice()
+                        .reverse()
+                        .slice(0, 5)
+                        .map(
+                          (event, index) => html`
+                            <div class="update-item">
+                              - UPDATE ${currentPkg.events.length - index}${index === 0 && currentPkg.events.length > 5 ? "..." : ""}
                             </div>
-                            <div class="package-meta">
-                              ${pkg.statusText} • ${pkg.carrier || "Unknown Carrier"}
-                            </div>
-                            <div class="package-update">
-                              Last update: ${this._formatDate(pkg.lastUpdate)}
-                            </div>
-                          </div>
-                          <ha-icon icon="mdi:chevron-right"></ha-icon>
-                        </div>
-                      `
-                    )}
+                          `
+                        )
+                    : html`<div class="update-item">- No updates available</div>`}
+                </div>
               </div>
             `
-          : ""}
-
-        ${this._selectedPackage
-          ? html`
-              <ha-dialog
-                open
-                .heading=${this._selectedPackage.customName ||
-                this._selectedPackage.trackingNumber}
-                @closed=${this._closeDetails}
-              >
-                <div class="package-details">
-                  <div class="detail-section">
-                    <div class="detail-label">Tracking Number</div>
-                    <div class="detail-value">${this._selectedPackage.trackingNumber}</div>
+          : html`
+              <div class="empty-state-container">
+                <div class="map-placeholder">No packages tracked</div>
+                <div class="package-details-section empty">
+                  <div class="package-header">
+                    <div class="package-title">No Packages</div>
                   </div>
-                  <div class="detail-section">
-                    <div class="detail-label">Status</div>
-                    <div class="detail-value status-${this._selectedPackage.status}">
-                      ${this._selectedPackage.statusText}
-                    </div>
+                  <div class="updates-list">
+                    <div class="update-item">Add a package to start tracking</div>
                   </div>
-                  <div class="detail-section">
-                    <div class="detail-label">Carrier</div>
-                    <div class="detail-value">${this._selectedPackage.carrier || "Unknown"}</div>
-                  </div>
-                  <div class="detail-section">
-                    <div class="detail-label">Last Update</div>
-                    <div class="detail-value">
-                      ${this._formatDate(this._selectedPackage.lastUpdate)}
-                    </div>
-                  </div>
-                  ${this._selectedPackage.estimatedDelivery
-                    ? html`
-                        <div class="detail-section">
-                          <div class="detail-label">Estimated Delivery</div>
-                          <div class="detail-value">
-                            ${this._formatDate(this._selectedPackage.estimatedDelivery)}
-                          </div>
-                        </div>
-                      `
-                    : ""}
-                  ${this._selectedPackage.locationText
-                    ? html`
-                        <div class="detail-section">
-                          <div class="detail-label">Location</div>
-                          <div class="detail-value">${this._selectedPackage.locationText}</div>
-                        </div>
-                      `
-                    : ""}
-                  ${this._selectedPackage.events && this._selectedPackage.events.length > 0
-                    ? html`
-                        <div class="detail-section">
-                          <div class="detail-label">Tracking Timeline</div>
-                          <div class="timeline">
-                            ${this._selectedPackage.events
-                              .slice()
-                              .reverse()
-                              .map(
-                                (event) => html`
-                                  <div class="timeline-item">
-                                    <div class="timeline-time">
-                                      ${this._formatDate(event.timestamp)}
-                                    </div>
-                                    <div class="timeline-content">
-                                      <div class="timeline-status">${event.status_text || event.status || ""}</div>
-                                      <div class="timeline-description">
-                                        ${event.description || event.location || "Update"}
-                                      </div>
-                                      ${event.location
-                                        ? html`<div class="timeline-location">${event.location}</div>`
-                                        : ""}
-                                    </div>
-                                  </div>
-                                `
-                              )}
-                          </div>
-                        </div>
-                      `
-                    : ""}
                 </div>
-                <mwc-button slot="primaryAction" @click=${this._closeDetails}>Close</mwc-button>
-              </ha-dialog>
-            `
-          : ""}
+              </div>
+            `}
       </ha-card>
     `;
   }
 
   static get styles() {
     return css`
-      ha-card {
-        padding: 16px;
+      ha-card.modern-card {
+        padding: 0;
+        overflow: hidden;
       }
 
       .card-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        margin-bottom: 16px;
+        padding: 16px;
+        border-bottom: 1px solid var(--divider-color, rgba(0, 0, 0, 0.12));
       }
 
       .title {
-        font-size: 24px;
+        font-size: 20px;
         font-weight: 500;
+        color: var(--primary-text-color);
       }
 
       .add-form-container {
-        margin-bottom: 16px;
         padding: 16px;
         background: var(--card-background-color, #fff);
-        border-radius: 4px;
       }
 
       .form-field {
@@ -694,142 +859,120 @@ class Ship24Card extends LitElement {
         justify-content: flex-end;
       }
 
-      #map {
-        border-radius: 4px;
-        margin-bottom: 16px;
+      /* Styled Map Container */
+      .map-container {
+        width: 100%;
+        height: 250px;
+        background: #e8e8e8;
+        border-radius: 8px 8px 0 0;
+        overflow: hidden;
+        position: relative;
       }
 
-      .package-list {
-        margin-top: 16px;
-      }
-
-      .list-header {
-        font-size: 18px;
-        font-weight: 500;
-        margin-bottom: 12px;
-      }
-
-      .empty-state {
-        text-align: center;
-        padding: 32px;
-        color: var(--secondary-text-color, #888);
-      }
-
-      .package-item {
+      .styled-map {
+        width: 100%;
+        height: 100%;
         display: flex;
         align-items: center;
-        padding: 12px;
-        margin-bottom: 8px;
-        background: var(--card-background-color, #fff);
-        border-radius: 4px;
-        cursor: pointer;
-        transition: background 0.2s;
+        justify-content: center;
       }
 
-      .package-item:hover {
-        background: var(--divider-color, #f0f0f0);
+      .map-svg {
+        width: 100%;
+        height: 100%;
       }
 
-      .package-status {
-        margin-right: 12px;
+      .route-path {
+        filter: drop-shadow(0 2px 4px rgba(33, 150, 243, 0.3));
+        animation: routeAnimation 3s ease-in-out infinite;
       }
 
-      .status-dot {
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        background: var(--status-color, #9e9e9e);
+      @keyframes routeAnimation {
+        0%, 100% {
+          opacity: 0.8;
+        }
+        50% {
+          opacity: 1;
+        }
       }
 
-      .package-status.pending .status-dot {
-        background: #ffa500;
-      }
-
-      .package-status.in_transit .status-dot {
-        background: #2196f3;
-      }
-
-      .package-status.out_for_delivery .status-dot {
-        background: #9c27b0;
-      }
-
-      .package-status.delivered .status-dot {
-        background: #4caf50;
-      }
-
-      .package-status.exception .status-dot {
-        background: #f44336;
-      }
-
-      .package-info {
-        flex: 1;
-      }
-
-      .package-name {
-        font-weight: 500;
-        margin-bottom: 4px;
-      }
-
-      .package-meta {
-        font-size: 14px;
+      .map-placeholder {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         color: var(--secondary-text-color, #888);
-        margin-bottom: 4px;
-      }
-
-      .package-update {
-        font-size: 12px;
-        color: var(--secondary-text-color, #888);
-      }
-
-      .package-details {
-        padding: 16px 0;
-      }
-
-      .detail-section {
-        margin-bottom: 16px;
-      }
-
-      .detail-label {
-        font-size: 12px;
-        color: var(--secondary-text-color, #888);
-        text-transform: uppercase;
-        margin-bottom: 4px;
-      }
-
-      .detail-value {
         font-size: 16px;
       }
 
-      .timeline {
-        margin-top: 8px;
+      /* Package Details Section */
+      .package-details-section {
+        background: #424242;
+        padding: 20px;
+        border-radius: 0 0 8px 8px;
+        min-height: 150px;
       }
 
-      .timeline-item {
-        padding: 12px;
-        margin-bottom: 8px;
-        background: var(--card-background-color, #f5f5f5);
-        border-left: 3px solid var(--primary-color, #03a9f4);
-        border-radius: 4px;
+      .package-details-section.empty {
+        background: #424242;
       }
 
-      .timeline-time {
-        font-size: 12px;
-        color: var(--secondary-text-color, #888);
-        margin-bottom: 4px;
+      .package-header {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        margin-bottom: 20px;
       }
 
-      .timeline-status {
-        font-weight: 500;
-        margin-bottom: 4px;
+      .nav-button {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.1);
+        border: none;
+        color: white;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.2s;
       }
 
-      .timeline-description {
-        margin-bottom: 4px;
+      .nav-button:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.2);
       }
 
-      .timeline-location {
-        font-size: 12px;
-        color: var(--secondary-text-color, #888);
+      .nav-button:disabled {
+        opacity: 0.3;
+        cursor: not-allowed;
+      }
+
+      .package-title {
+        font-size: 24px;
+        font-weight: 600;
+        color: white;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        letter-spacing: 1px;
+      }
+
+      .updates-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .update-item {
+        color: white;
+        font-size: 14px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        padding: 4px 0;
+      }
+
+      .empty-state-container {
+        display: flex;
+        flex-direction: column;
       }
 
       .error {
