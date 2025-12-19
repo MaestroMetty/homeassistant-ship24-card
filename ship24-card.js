@@ -812,12 +812,32 @@ class Ship24Card extends LitElement {
   }
 }
 
-customElements.define("ship24-card", Ship24Card);
+// Register custom elements
+console.log("Ship24 Card: Registering custom elements...");
+if (!customElements.get("ship24-card")) {
+  customElements.define("ship24-card", Ship24Card);
+  console.log("Ship24 Card: ship24-card registered");
+} else {
+  console.log("Ship24 Card: ship24-card already registered");
+}
 
+if (!customElements.get("ship24-card-editor")) {
+  customElements.define("ship24-card-editor", Ship24CardEditor);
+  console.log("Ship24 Card: ship24-card-editor registered");
+} else {
+  console.log("Ship24 Card: ship24-card-editor already registered");
+}
+
+// Register with custom cards registry
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "ship24-card",
-  name: "Ship24 Package Tracking Card",
-  description: "Track packages with interactive map and timeline",
-});
+if (!window.customCards.find(card => card.type === "ship24-card")) {
+  window.customCards.push({
+    type: "ship24-card",
+    name: "Ship24 Package Tracking Card",
+    description: "Track packages with interactive map and timeline",
+  });
+  console.log("Ship24 Card: Registered with custom cards registry");
+} else {
+  console.log("Ship24 Card: Already in custom cards registry");
+}
 
