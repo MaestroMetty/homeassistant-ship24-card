@@ -1,5 +1,11 @@
-import { LitElement, html, css } from "lit";
-import { property, state } from "lit/decorators.js";
+// Use absolute URLs with ?module parameter as per Home Assistant documentation
+// https://developers.home-assistant.io/docs/frontend/custom-ui/custom-card/
+// Using lit-element 2.x as shown in the official documentation example
+import {
+  LitElement,
+  html,
+  css,
+} from "https://unpkg.com/lit-element@2.0.1/lit-element.js?module";
 
 // Card Editor Component
 class Ship24CardEditor extends LitElement {
@@ -237,6 +243,28 @@ class Ship24Card extends LitElement {
       map_height: 400,
       show_list: true,
       default_zoom: 2,
+    };
+  }
+
+  // The height of your card. Home Assistant uses this to automatically
+  // distribute all cards over the available columns in masonry view
+  getCardSize() {
+    // Base size for map + header
+    let size = Math.ceil(this.config.map_height / 50) + 1;
+    // Add size for package list if shown
+    if (this.config.show_list && this._packages) {
+      size += Math.min(this._packages.length, 5) + 1;
+    }
+    return size;
+  }
+
+  // The rules for sizing your card in the grid in sections view
+  getGridOptions() {
+    return {
+      rows: 4,
+      columns: 12,
+      min_rows: 3,
+      max_rows: 8,
     };
   }
 
