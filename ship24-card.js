@@ -70,7 +70,9 @@ class Ship24CardEditor extends LitElement {
       return;
     }
     const newConfig = { ...this.config };
-    newConfig.device = ev.detail.value || null;
+    // Handle both @change and @value-changed events
+    const value = ev.detail?.value || ev.target?.value || null;
+    newConfig.device = value || null;
     this.config = newConfig;
     this._fireChangedEvent();
   }
@@ -115,7 +117,6 @@ class Ship24CardEditor extends LitElement {
             .value=${this.config.device || ""}
             @value-changed=${this._deviceChanged}
             label="Ship24 Tracking Device"
-            .includeDeviceClasses=${[]}
           ></ha-device-picker>
           <div class="config-help">
             Select the Ship24 Tracking device. If not specified, the card will search for devices with Ship24 sensors.
@@ -716,15 +717,6 @@ class Ship24Card extends LitElement {
 
     return html`
       <ha-card class="modern-card">
-        <div class="card-header">
-          <div class="title">Package Tracking</div>
-          <ha-icon-button
-            .label=${this._showAddForm ? "Close" : "Add Package"}
-            @click=${this._toggleAddForm}
-          >
-            <ha-icon .icon=${this._showAddForm ? "mdi:close" : "mdi:plus"}></ha-icon>
-          </ha-icon-button>
-        </div>
 
         ${this._showAddForm
           ? html`
@@ -770,6 +762,13 @@ class Ship24Card extends LitElement {
                     <ha-icon icon="mdi:chevron-left"></ha-icon>
                   </button>
                   <div class="package-title">PARCEL#${packageNumber}</div>
+                  <ha-icon-button
+                    .label=${this._showAddForm ? "Close" : "Add Package"}
+                    @click=${this._toggleAddForm}
+                    class="add-button"
+                  >
+                    <ha-icon .icon=${this._showAddForm ? "mdi:close" : "mdi:plus"}></ha-icon>
+                  </ha-icon-button>
                   <button class="nav-button" @click=${this._nextPackage} ?disabled=${this._packages.length <= 1}>
                     <ha-icon icon="mdi:chevron-right"></ha-icon>
                   </button>
@@ -798,6 +797,13 @@ class Ship24Card extends LitElement {
                 <div class="package-details-section empty">
                   <div class="package-header">
                     <div class="package-title">No Packages</div>
+                    <ha-icon-button
+                      .label=${this._showAddForm ? "Close" : "Add Package"}
+                      @click=${this._toggleAddForm}
+                      class="add-button"
+                    >
+                      <ha-icon .icon=${this._showAddForm ? "mdi:close" : "mdi:plus"}></ha-icon>
+                    </ha-icon-button>
                   </div>
                   <div class="updates-list">
                     <div class="update-item">Add a package to start tracking</div>
@@ -814,20 +820,6 @@ class Ship24Card extends LitElement {
       ha-card.modern-card {
         padding: 0;
         overflow: hidden;
-      }
-
-      .card-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 16px;
-        border-bottom: 1px solid var(--divider-color, rgba(0, 0, 0, 0.12));
-      }
-
-      .title {
-        font-size: 20px;
-        font-weight: 500;
-        color: var(--primary-text-color);
       }
 
       .add-form-container {
@@ -863,7 +855,7 @@ class Ship24Card extends LitElement {
       .map-container {
         width: 100%;
         height: 250px;
-        background: #e8e8e8;
+        background: var(--card-background-color, var(--ha-card-background, #ffffff));
         border-radius: 8px 8px 0 0;
         overflow: hidden;
         position: relative;
@@ -908,14 +900,15 @@ class Ship24Card extends LitElement {
 
       /* Package Details Section */
       .package-details-section {
-        background: #424242;
+        background: var(--card-background-color, var(--ha-card-background, #ffffff));
         padding: 20px;
         border-radius: 0 0 8px 8px;
         min-height: 150px;
+        border-top: 1px solid var(--divider-color, rgba(0, 0, 0, 0.12));
       }
 
       .package-details-section.empty {
-        background: #424242;
+        background: var(--card-background-color, var(--ha-card-background, #ffffff));
       }
 
       .package-header {
@@ -930,9 +923,9 @@ class Ship24Card extends LitElement {
         width: 40px;
         height: 40px;
         border-radius: 50%;
-        background: rgba(255, 255, 255, 0.1);
-        border: none;
-        color: white;
+        background: var(--secondary-background-color, rgba(0, 0, 0, 0.05));
+        border: 1px solid var(--divider-color, rgba(0, 0, 0, 0.12));
+        color: var(--primary-text-color);
         cursor: pointer;
         display: flex;
         align-items: center;
@@ -941,7 +934,8 @@ class Ship24Card extends LitElement {
       }
 
       .nav-button:hover:not(:disabled) {
-        background: rgba(255, 255, 255, 0.2);
+        background: var(--primary-color);
+        color: var(--text-primary-color, #ffffff);
       }
 
       .nav-button:disabled {
@@ -949,11 +943,15 @@ class Ship24Card extends LitElement {
         cursor: not-allowed;
       }
 
+      .add-button {
+        color: var(--primary-color);
+      }
+
       .package-title {
         font-size: 24px;
         font-weight: 600;
-        color: white;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        color: var(--primary-text-color);
+        font-family: var(--ha-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
         letter-spacing: 1px;
       }
 
@@ -964,9 +962,9 @@ class Ship24Card extends LitElement {
       }
 
       .update-item {
-        color: white;
+        color: var(--secondary-text-color);
         font-size: 14px;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        font-family: var(--ha-font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif);
         padding: 4px 0;
       }
 
